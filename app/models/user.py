@@ -21,7 +21,9 @@ class User(Base):
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     role: Mapped[UserRole] = mapped_column(
-        Enum(UserRole, name="user_role"), nullable=False, default=UserRole.CITIZEN
+        Enum(UserRole, name="user_role", values_callable=lambda e: [v.value for v in e]),
+        nullable=False,
+        default=UserRole.CITIZEN,
     )
 
     # Only populated for authority-role users; ties the account to an Authority org.

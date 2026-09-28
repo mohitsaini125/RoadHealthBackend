@@ -39,18 +39,21 @@ class Report(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     damage_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     severity: Mapped[DamageSeverity | None] = mapped_column(
-        Enum(DamageSeverity, name="damage_severity"), nullable=True
+        Enum(DamageSeverity, name="damage_severity", values_callable=lambda e: [v.value for v in e]),
+        nullable=True,
     )
     ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     status: Mapped[ReportStatus] = mapped_column(
-        Enum(ReportStatus, name="report_status"),
+        Enum(ReportStatus, name="report_status", values_callable=lambda e: [v.value for v in e]),
         nullable=False,
         default=ReportStatus.SUBMITTED,
         index=True,
     )
     priority: Mapped[ReportPriority | None] = mapped_column(
-        Enum(ReportPriority, name="report_priority"), nullable=True, index=True
+        Enum(ReportPriority, name="report_priority", values_callable=lambda e: [v.value for v in e]),
+        nullable=True,
+        index=True,
     )
 
     assigned_authority_id: Mapped[uuid.UUID | None] = mapped_column(

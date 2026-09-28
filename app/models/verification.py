@@ -23,7 +23,8 @@ class Verification(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     result: Mapped[VerificationResult] = mapped_column(
-        Enum(VerificationResult, name="verification_result"), nullable=False
+        Enum(VerificationResult, name="verification_result", values_callable=lambda e: [v.value for v in e]),
+        nullable=False,
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)

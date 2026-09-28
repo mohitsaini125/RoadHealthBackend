@@ -20,10 +20,12 @@ class ReportStatusHistory(Base):
         UUID(as_uuid=True), ForeignKey("reports.id"), nullable=False, index=True
     )
     from_status: Mapped[ReportStatus | None] = mapped_column(
-        Enum(ReportStatus, name="report_status"), nullable=True
+        Enum(ReportStatus, name="report_status", values_callable=lambda e: [v.value for v in e]),
+        nullable=True,
     )
     to_status: Mapped[ReportStatus] = mapped_column(
-        Enum(ReportStatus, name="report_status"), nullable=False
+        Enum(ReportStatus, name="report_status", values_callable=lambda e: [v.value for v in e]),
+        nullable=False,
     )
     changed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True

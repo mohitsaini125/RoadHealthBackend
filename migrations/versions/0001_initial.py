@@ -31,10 +31,6 @@ def upgrade() -> None:
     )
     verification_result = postgresql.ENUM("passed", "failed", name="verification_result")
 
-    bind = op.get_bind()
-    for enum in (user_role, damage_severity, report_priority, report_status, verification_result):
-        enum.create(bind, checkfirst=True)
-
     op.create_table(
         "authorities",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),

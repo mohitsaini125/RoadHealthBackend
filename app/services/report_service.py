@@ -20,7 +20,7 @@ from app.models.report import Report
 from app.models.report_status_history import ReportStatusHistory
 from app.models.user import User
 from app.services import ai_service, location_service
-from app.services.ai_service import AIResult
+from app.services.ai_service import AIResult, AIServiceUnavailableError, MODEL_VERSION_STUB
 
 
 class ReportError(Exception):
@@ -136,8 +136,23 @@ def create_report(
     db.add(report)
     db.flush()  # assigns defaults, keeps report.id stable for AI service call
 
-    # Run (or stub) AI assessment — isolated behind ai_service.
-    ai_result = ai_service.assess_image(image_relative_path)
+    # Run AI assessment via Roboflow — isolated behind ai_service.
+    # If the AI backend is unavailable, degrade gracefully: store null fields
+    # so the report is still saved and the citizen is not blocked.
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    try:
+        ai_result = ai_service.assess_image(image_relative_path)
+    except AIServiceUnavailableError as exc:
+        _log.warning("AI assessment unavailable for report %s: %s", report_id, exc)
+        ai_result = AIResult(
+            damage_type=None,
+            confidence=None,
+            bounding_boxes=None,
+            estimated_severity=None,
+            model_version=f"{MODEL_VERSION_STUB}-error",
+            processed_at=datetime.now(timezone.utc),
+        )
     severity, priority = determine_severity_and_priority(ai_result)
     report.damage_type = ai_result.damage_type
     report.ai_confidence = ai_result.confidence

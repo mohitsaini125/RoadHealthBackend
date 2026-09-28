@@ -41,8 +41,10 @@ class Settings(BaseSettings):
         default_factory=lambda: [".jpg", ".jpeg", ".png", ".webp"]
     )
 
-    # --- AI ---
-    AI_MODEL_PATH: str = Field(default="")
+    # --- AI / Roboflow ---
+    ROBOFLOW_API_KEY: str = Field(default="")
+    ROBOFLOW_MODEL_ID: str = Field(default="rdd-india/9")
+    ROBOFLOW_API_URL: str = Field(default="https://serverless.roboflow.com")
 
     # --- Scheduler / Escalation ---
     SCHEDULER_ENABLED: bool = Field(default=True)

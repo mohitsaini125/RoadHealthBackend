@@ -12,7 +12,7 @@ local filesystem image storage, APScheduler for escalation.
 
 Python 3.11+ · FastAPI · Uvicorn · SQLAlchemy 2.x · Alembic · PostgreSQL +
 PostGIS · Pydantic v2 / pydantic-settings · PyJWT · Argon2/bcrypt (passlib) ·
-APScheduler · python-multipart · (optional) Ultralytics YOLOv8
+APScheduler · python-multipart · httpx
 
 ## Setup
 
@@ -21,7 +21,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# edit .env: DATABASE_URL, JWT_SECRET_KEY, etc.
+# edit .env: DATABASE_URL, JWT_SECRET_KEY, ROBOFLOW_API_KEY, etc.
 ```
 
 Requires a PostgreSQL database with the PostGIS extension available
@@ -32,7 +32,7 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-API docs: `http://localhost:8000/docs`
+API docs: `http://localhost:8000/docs`  
 Health check: `GET /health`
 
 ## Project layout
@@ -54,6 +54,7 @@ app/
 ├── utils/                 jwt.py, security.py, file_utils.py
 └── uploads/reports/       Local image storage (gitignored, kept via .gitkeep)
 migrations/                Alembic — see 0001_initial.py for the base schema
+tests/                     pytest suite — no real API key needed
 ```
 
 ## Architecture
@@ -81,14 +82,100 @@ Transitions are validated against an explicit map
 (`app/models/enums.py::ALLOWED_STATUS_TRANSITIONS`) — clients can never set
 an arbitrary status string.
 
-## AI service
+## AI service — Roboflow integration
 
-`app/services/ai_service.py` is the sole integration boundary for the damage
-model. With `AI_MODEL_PATH` unset, it uses a clearly-labeled development
-stub (`model_version="dev-stub-0.1"`) so the rest of the backend is testable
-without a trained model. Set `AI_MODEL_PATH` and install `ultralytics` to use
-a real YOLOv8 model — the raw-output-to-severity mapping in
-`_RealModelBackend.predict` is a placeholder pending real labels.
+`app/services/ai_service.py` is the **sole integration boundary** for the
+road-damage AI model.  Report controllers and services only ever call
+`assess_image()` — they never import httpx or touch the Roboflow API directly.
+
+### How it works
+
+```
+POST /reports  (image + GPS)
+  └─ report_controller.py
+       └─ report_service.create_report()
+            └─ ai_service.assess_image(image_path)
+                 └─ _RoboflowBackend.predict()          ← if ROBOFLOW_API_KEY is set
+                      POST https://detect.roboflow.com/rdd-india/9?api_key=...
+                      image sent as base64 in request body
+                      response: list of {class, confidence, x, y, width, height}
+                 └─ _StubBackend.predict()              ← if key is absent
+                      returns null fields, model_version="dev-stub-0.1"
+            └─ AIResult → AIAssessment row + Report fields
+```
+
+### Roboflow model classes (rdd-india/9)
+
+| Class | Stored damage_type    |
+|-------|-----------------------|
+| D00   | Longitudinal Crack    |
+| D20   | Transverse Crack      |
+| D40   | Alligator Crack       |
+| D44   | Pothole               |
+
+### Severity mapping (confidence-based)
+
+| Confidence range | estimated_severity |
+|------------------|--------------------|
+| ≥ 0.80           | critical           |
+| ≥ 0.60           | high               |
+| ≥ 0.40           | medium             |
+| < 0.40           | low                |
+
+When multiple detections are present the **highest-confidence** prediction is
+used as the primary `damage_type` / `confidence` / `estimated_severity`.
+All bounding boxes are preserved in `AIAssessment.bounding_boxes` (JSONB).
+
+### Required environment variables
+
+| Variable           | Required? | Default                        | Description                                |
+|--------------------|-----------|--------------------------------|--------------------------------------------|
+| `ROBOFLOW_API_KEY` | Yes*      | _(empty)_                      | Roboflow API key — never commit this value |
+| `ROBOFLOW_MODEL_ID`| No        | `rdd-india/9`                  | Roboflow model version                     |
+| `ROBOFLOW_API_URL` | No        | `https://detect.roboflow.com`  | Roboflow inference endpoint                |
+
+\* Without an API key the backend runs with the safe **development stub** that
+returns null AI fields.  All other endpoints remain fully functional.
+
+### Getting a Roboflow API key
+
+1. Sign up at <https://app.roboflow.com/>
+2. Go to **Account → API Keys**
+3. Copy the key into your `.env` as `ROBOFLOW_API_KEY=<key>`
+
+### Error handling
+
+If the Roboflow API is unreachable, times out (15 s), returns a non-200 status,
+or returns an unparseable body:
+
+- `AIServiceUnavailableError` is raised inside `ai_service`.
+- `report_service.create_report()` catches it, logs a warning, and stores
+  a null `AIAssessment` (`model_version="dev-stub-0.1-error"`).
+- The report is **still saved** and the API returns 201.  The citizen is
+  never blocked by an AI outage.
+
+The API key is **never** logged, returned in responses, or included in
+error messages.
+
+### Testing AI inference (no real key needed)
+
+```bash
+# Unit tests — all mocked, no network calls
+pytest tests/test_ai_service.py -v
+
+# Manual end-to-end (real key)
+curl -X POST http://localhost:8000/api/v1/reports \
+  -H "Authorization: Bearer <jwt>" \
+  -F "latitude=28.6139" \
+  -F "longitude=77.2090" \
+  -F "image=@/path/to/road.jpg"
+# Response includes ai_assessments with damage_type, confidence, bounding_boxes, severity
+```
+
+### Disabling AI inference (development)
+
+Leave `ROBOFLOW_API_KEY` blank in `.env`.  All report creation succeeds;
+`AIAssessment.model_version` will be `"dev-stub-0.1"` and all AI fields null.
 
 ## Escalation
 
@@ -106,16 +193,17 @@ sync.
   per the spec's explicit instruction not to hard-code final durations.
 - **Severity → priority mapping** (`report_service._SEVERITY_TO_PRIORITY`):
   works once the AI model returns real severities; adjust as needed.
-- **AI raw-output mapping** (`ai_service._RealModelBackend.predict`): wire up
-  once real class labels/severity rules are defined.
+- **Confidence → severity thresholds** (`ai_service._CONFIDENCE_SEVERITY`):
+  calibrate against real model output distributions once you have ground-truth
+  data.
 - **Escalation hierarchy data**: seed `authorities.parent_authority_id`
   manually or via an admin endpoint — there's no default hierarchy.
 
 ## Definition-of-done coverage
 
 Signup/login/JWT, citizen report submission (image + GPS), local image
-storage, AI assessment attachment, zone/authority assignment, status
-lifecycle + audit trail, repair evidence + verification (pass → resolved,
-fail → rework), deadline calculation, scheduled escalation with history,
-and dashboard summary/map/overdue/escalated/analytics endpoints are all
-implemented per the spec's Definition of Done (§28).
+storage, AI assessment attachment (Roboflow `rdd-india/9`), zone/authority
+assignment, status lifecycle + audit trail, repair evidence + verification
+(pass → resolved, fail → rework), deadline calculation, scheduled escalation
+with history, and dashboard summary/map/overdue/escalated/analytics endpoints
+are all implemented per the spec's Definition of Done (§28).

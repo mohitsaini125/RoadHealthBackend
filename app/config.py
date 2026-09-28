@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # --- Database ---
     DATABASE_URL: str = Field(
-        default="postgresql+psycopg2://postgres:postgres@localhost:5432/road_health"
+        default="postgresql+psycopg2://postgres:155223@localhost:5432/road_health"
     )
 
     # --- JWT ---

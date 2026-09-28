@@ -1,4 +1,5 @@
 """Business rules for signup/login. No FastAPI/HTTP concerns here."""
+from app.models.enums import UserRole
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,7 @@ def signup(db: Session, payload: SignupRequest) -> User:
         password_hash=hash_password(payload.password),
         full_name=payload.full_name,
         phone=payload.phone,
-        role=payload.role,
+        role=UserRole.CITIZEN,
     )
     db.add(user)
     db.commit()

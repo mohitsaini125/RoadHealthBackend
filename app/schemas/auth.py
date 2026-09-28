@@ -10,8 +10,6 @@ class SignupRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
     phone: str | None = None
-    role: UserRole = UserRole.CITIZEN
-
 
 class SignupResponse(BaseModel):
     id: uuid.UUID

@@ -21,15 +21,22 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
 
-    user_role = postgresql.ENUM("citizen", "authority", "admin", name="user_role")
-    damage_severity = postgresql.ENUM("low", "medium", "high", "critical", name="damage_severity")
-    report_priority = postgresql.ENUM("low", "medium", "high", "critical", name="report_priority")
+    user_role = postgresql.ENUM("citizen", "authority", "admin", name="user_role", create_type=False)
+    damage_severity = postgresql.ENUM("low", "medium", "high", "critical", name="damage_severity", create_type=False)
+    report_priority = postgresql.ENUM("low", "medium", "high", "critical", name="report_priority", create_type=False)
     report_status = postgresql.ENUM(
         "submitted", "under_review", "assigned", "accepted", "in_progress",
         "repair_completed", "verification", "resolved", "rejected",
-        "rejected_for_rework", "escalated", name="report_status",
+        "rejected_for_rework", "escalated", name="report_status", create_type=False,
     )
-    verification_result = postgresql.ENUM("passed", "failed", name="verification_result")
+    verification_result = postgresql.ENUM("passed", "failed", name="verification_result", create_type=False)
+
+    bind = op.get_bind()
+    user_role.create(bind, checkfirst=True)
+    damage_severity.create(bind, checkfirst=True)
+    report_priority.create(bind, checkfirst=True)
+    report_status.create(bind, checkfirst=True)
+    verification_result.create(bind, checkfirst=True)
 
     op.create_table(
         "authorities",

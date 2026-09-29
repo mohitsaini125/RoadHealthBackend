@@ -63,8 +63,10 @@ class _RoboflowBackend:
 
     def _read_image_b64(self, image_path: str) -> str:
         abs_path = Path(image_path)
-        if not abs_path.is_absolute():
-            abs_path = Path.cwd() / abs_path
+        if not abs_path.exists():
+            raise AIServiceUnavailableError(
+                f"Image file not found for AI assessment: {abs_path}"
+            )
         with abs_path.open("rb") as fh:
             return base64.b64encode(fh.read()).decode("ascii")
 

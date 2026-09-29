@@ -1,9 +1,25 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.models.enums import DamageSeverity, ReportPriority, ReportStatus
+
+
+def _to_image_url(raw_path: str) -> str:
+    """
+    Normalise a stored image path to a public URL path.
+    Handles three formats that may exist in the database:
+      - /uploads/reports/filename      → already correct
+      - reports/filename               → /uploads/reports/filename
+      - app/uploads/reports/filename   → /uploads/reports/filename
+    """
+    p = raw_path.lstrip("/")
+    if p.startswith("app/"):
+        p = p[len("app/"):]
+    if not p.startswith("uploads/"):
+        p = f"uploads/{p}"
+    return f"/{p}"
 
 
 class ReportCreate(BaseModel):
@@ -66,6 +82,13 @@ class ReportResponse(BaseModel):
     repaired_at: datetime | None = None
     verified_at: datetime | None = None
 
+    @computed_field
+    @property
+    def image_url(self) -> str:
+        """Public URL path the mobile app uses to fetch the image.
+        Combine with API_ORIGIN: API_ORIGIN + report.image_url"""
+        return _to_image_url(self.image_path)
+
     model_config = {"from_attributes": True}
 
 
@@ -80,3 +103,4 @@ class ReportListQuery(BaseModel):
     authority_id: uuid.UUID | None = None
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
+

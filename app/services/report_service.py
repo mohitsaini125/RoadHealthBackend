@@ -3,6 +3,7 @@ Business rules for the report lifecycle: creation, listing, status transitions,
 repair evidence, and deadline calculation. Routes/controllers stay thin;
 all of this logic lives here.
 """
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -21,6 +22,9 @@ from app.models.report_status_history import ReportStatusHistory
 from app.models.user import User
 from app.services import ai_service, location_service
 from app.services.ai_service import AIResult, AIServiceUnavailableError, MODEL_VERSION_STUB
+from app.utils.file_utils import resolve_absolute_image_path
+
+_log = logging.getLogger(__name__)
 
 
 class ReportError(Exception):
@@ -137,14 +141,14 @@ def create_report(
     db.flush()  # assigns defaults, keeps report.id stable for AI service call
 
     # Run AI assessment via Roboflow — isolated behind ai_service.
+    # Resolve the absolute path so Roboflow can find the file regardless of CWD.
     # If the AI backend is unavailable, degrade gracefully: store null fields
     # so the report is still saved and the citizen is not blocked.
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    abs_image_path = str(resolve_absolute_image_path(image_relative_path))
     try:
-        ai_result = ai_service.assess_image(image_relative_path)
+        ai_result = ai_service.assess_image(abs_image_path)
     except AIServiceUnavailableError as exc:
-        _log.warning("AI assessment unavailable for report %s: %s", report_id, exc)
+        _log.warning("AI assessment failed for report %s: %s", report_id, exc)
         ai_result = AIResult(
             damage_type=None,
             confidence=None,

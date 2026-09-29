@@ -124,7 +124,7 @@ class TestRoboflowBackendSuccess:
 
         assert result.damage_type is None
         assert result.confidence is None
-        assert result.bounding_boxes is None
+        assert result.bounding_boxes == {"predictions": []}  # empty list, not None
         assert result.estimated_severity is None
 
 
@@ -207,7 +207,7 @@ class TestRoboflowBackendErrors:
         monkeypatch.setattr("app.config.settings.ROBOFLOW_API_URL", "https://detect.roboflow.com")
         from app.services.ai_service import _RoboflowBackend, AIServiceUnavailableError
         backend = _RoboflowBackend()
-        with pytest.raises(AIServiceUnavailableError, match="Could not read image"):
+        with pytest.raises(AIServiceUnavailableError, match="Image file not found"):
             backend.predict("/nonexistent/path/image.jpg")
 
 

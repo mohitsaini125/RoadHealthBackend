@@ -25,8 +25,10 @@ class Settings(BaseSettings):
     DEBUG: bool = Field(default=False)
 
     # --- Database ---
+    # Local PostgreSQL for this project is installed on 5433. The value in
+    # .env still takes precedence; this is only the safe local default.
     DATABASE_URL: str = Field(
-        default="postgresql+psycopg2://postgres:155223@localhost:5432/road_health"
+        default="postgresql+psycopg2://postgres:postgres@localhost:5433/road_health"
     )
 
     # --- JWT ---
@@ -44,7 +46,8 @@ class Settings(BaseSettings):
     # --- AI / Roboflow ---
     ROBOFLOW_API_KEY: str = Field(default="")
     ROBOFLOW_MODEL_ID: str = Field(default="rdd-india/9")
-    ROBOFLOW_API_URL: str = Field(default="https://serverless.roboflow.com")
+    # Roboflow's hosted detection endpoint for model inference.
+    ROBOFLOW_API_URL: str = Field(default="https://detect.roboflow.com")
 
     # --- Scheduler / Escalation ---
     SCHEDULER_ENABLED: bool = Field(default=True)
@@ -54,8 +57,6 @@ class Settings(BaseSettings):
     CORS_ORIGINS: List[str] = Field(default_factory=lambda: ["*"])
 
     # --- Escalation SLA (hours to repair deadline, by priority) ---
-    # PLACEHOLDER VALUES — do not treat as final. The project owner must
-    # confirm real SLA durations per priority before production use.
     SLA_HOURS_CRITICAL: int = Field(default=24)
     SLA_HOURS_HIGH: int = Field(default=72)
     SLA_HOURS_MEDIUM: int = Field(default=168)

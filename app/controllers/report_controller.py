@@ -8,6 +8,7 @@ from app.models.report import Report
 from app.models.user import User
 from app.schemas.report import ReportCreate, ReportListQuery, ReportStatusUpdate
 from app.services import image_service, report_service
+from app.services.ai_service import AIServiceUnavailableError
 from app.utils.file_utils import InvalidUploadError
 
 
@@ -32,14 +33,23 @@ async def create_report(
     except InvalidUploadError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
-    return report_service.create_report(
-        db,
-        citizen=current_user,
-        latitude=payload.latitude,
-        longitude=payload.longitude,
-        description=payload.description,
-        image_relative_path=relative_path,
-    )
+    try:
+        return report_service.create_report(
+            db,
+            citizen=current_user,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+            description=payload.description,
+            image_relative_path=relative_path,
+        )
+    except AIServiceUnavailableError as exc:
+        # Do not return a fake successful report with blank AI fields. The
+        # client needs to know that the AI assessment could not be completed.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"AI assessment failed: {exc}",
+        ) from exc
 
 
 def get_report(db: Session, current_user: User, report_id: uuid.UUID) -> Report:
@@ -72,7 +82,6 @@ def list_reports(db: Session, current_user: User, query: ReportListQuery) -> lis
             page=query.page,
             page_size=query.page_size,
         )
-    # Admin: unrestricted, optionally filtered by the requested authority_id.
     return report_service.list_reports(
         db,
         authority_id=query.authority_id,

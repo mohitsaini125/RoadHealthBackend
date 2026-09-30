@@ -3,7 +3,6 @@ Business rules for the report lifecycle: creation, listing, status transitions,
 repair evidence, and deadline calculation. Routes/controllers stay thin;
 all of this logic lives here.
 """
-import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -21,10 +20,8 @@ from app.models.report import Report
 from app.models.report_status_history import ReportStatusHistory
 from app.models.user import User
 from app.services import ai_service, location_service
-from app.services.ai_service import AIResult, AIServiceUnavailableError, MODEL_VERSION_STUB
+from app.services.ai_service import AIResult
 from app.utils.file_utils import resolve_absolute_image_path
-
-_log = logging.getLogger(__name__)
 
 
 class ReportError(Exception):
@@ -39,7 +36,6 @@ class ReportNotFoundError(ReportError):
     pass
 
 
-# --- Severity -> priority mapping. Adjust once the project owner finalizes rules. ---
 _SEVERITY_TO_PRIORITY = {
     DamageSeverity.CRITICAL: ReportPriority.CRITICAL,
     DamageSeverity.HIGH: ReportPriority.HIGH,
@@ -56,7 +52,6 @@ _PRIORITY_TO_SLA_HOURS = {
 
 
 def _generate_report_number(db: Session) -> str:
-    """Simple sequential-looking, human-friendly report number: RH-YYYYMMDD-XXXX."""
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     prefix = f"RH-{today}-"
     count_today = db.execute(
@@ -69,8 +64,6 @@ def _generate_report_number(db: Session) -> str:
 def determine_severity_and_priority(
     ai_result: AIResult,
 ) -> tuple[DamageSeverity | None, ReportPriority | None]:
-    """Derives severity/priority from the AI result. With the dev stub (no
-    real prediction yet) both stay None until a human/authority reviews it."""
     severity_str = ai_result.estimated_severity
     if severity_str is None:
         return None, None
@@ -117,11 +110,7 @@ def create_report(
     description: str | None,
     image_relative_path: str,
 ) -> Report:
-    """
-    Orchestrates the full creation flow per spec section 11:
-    store record -> run AI assessment -> determine severity/priority ->
-    determine authority/zone -> calculate deadline -> initial status history.
-    """
+    """Create a report only after a real AI assessment succeeds."""
     report_id = uuid.uuid4()
     zone = location_service.find_zone_for_point(db, latitude, longitude)
 
@@ -138,25 +127,13 @@ def create_report(
         assigned_authority_id=zone.authority_id if zone else None,
     )
     db.add(report)
-    db.flush()  # assigns defaults, keeps report.id stable for AI service call
+    db.flush()
 
-    # Run AI assessment via Roboflow — isolated behind ai_service.
-    # Resolve the absolute path so Roboflow can find the file regardless of CWD.
-    # If the AI backend is unavailable, degrade gracefully: store null fields
-    # so the report is still saved and the citizen is not blocked.
+    # Let AIServiceUnavailableError propagate to the controller. A failed AI
+    # assessment must not be recorded as a successful report with fake blanks.
     abs_image_path = str(resolve_absolute_image_path(image_relative_path))
-    try:
-        ai_result = ai_service.assess_image(abs_image_path)
-    except AIServiceUnavailableError as exc:
-        _log.warning("AI assessment failed for report %s: %s", report_id, exc)
-        ai_result = AIResult(
-            damage_type=None,
-            confidence=None,
-            bounding_boxes=None,
-            estimated_severity=None,
-            model_version=f"{MODEL_VERSION_STUB}-error",
-            processed_at=datetime.now(timezone.utc),
-        )
+    ai_result = ai_service.assess_image(abs_image_path)
+
     severity, priority = determine_severity_and_priority(ai_result)
     report.damage_type = ai_result.damage_type
     report.ai_confidence = ai_result.confidence
@@ -225,8 +202,6 @@ def update_status(
     changed_by_user_id: uuid.UUID,
     notes: str | None,
 ) -> Report:
-    """Validates the transition against the explicit map — clients can never
-    force an arbitrary status string."""
     allowed = ALLOWED_STATUS_TRANSITIONS.get(report.status, set())
     if new_status not in allowed:
         raise InvalidTransitionError(
@@ -254,12 +229,6 @@ def attach_repair_evidence(
     changed_by_user_id: uuid.UUID,
     notes: str | None,
 ) -> Report:
-    """
-    Authority uploads repair evidence -> report moves to verification.
-    Accepts the call from IN_PROGRESS directly (repair just finished) or
-    from REPAIR_COMPLETED (repair was marked done in an earlier call),
-    hopping through REPAIR_COMPLETED either way so repaired_at is always set.
-    """
     report.repair_evidence_path = evidence_image_path
     if report.status == ReportStatus.IN_PROGRESS:
         update_status(db, report, ReportStatus.REPAIR_COMPLETED, changed_by_user_id, "Repair marked complete.")

@@ -4,10 +4,8 @@ Integration boundary for the road-damage AI model.
 Report controllers/services call only `assess_image()` — they never import
 httpx or touch the Roboflow API directly.
 
-The backend uses Roboflow's hosted inference API for rdd-india/9. The API
-key and model configuration are read only from environment-backed settings.
-If no API key is configured, the development stub is used so local report
-creation remains usable without pretending that a real prediction happened.
+Roboflow's hosted inference API is used for rdd-india/9. The API key and
+model configuration are read only from environment-backed settings.
 """
 import base64
 import logging
@@ -21,8 +19,6 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-MODEL_VERSION_STUB = "dev-stub-0.1"
 
 _CLASS_LABEL_MAP: dict[str, str] = {
     "D00": "Longitudinal Crack",
@@ -61,23 +57,35 @@ class _RoboflowBackend:
         self._model_id = settings.ROBOFLOW_MODEL_ID.strip().strip("/")
         self._api_url = settings.ROBOFLOW_API_URL.rstrip("/")
 
+        if not self._api_key:
+            raise AIServiceUnavailableError(
+                "ROBOFLOW_API_KEY is not configured. Add it to backend/.env and restart FastAPI."
+            )
+        if not self._model_id:
+            raise AIServiceUnavailableError("ROBOFLOW_MODEL_ID is not configured.")
+
     def _read_image_b64(self, image_path: str) -> str:
         abs_path = Path(image_path)
         if not abs_path.exists():
             raise AIServiceUnavailableError(
                 f"Image file not found for AI assessment: {abs_path}"
             )
-        with abs_path.open("rb") as fh:
-            return base64.b64encode(fh.read()).decode("ascii")
+        try:
+            with abs_path.open("rb") as fh:
+                image_bytes = fh.read()
+        except OSError as exc:
+            raise AIServiceUnavailableError(
+                f"Could not read image for AI assessment: {exc}"
+            ) from exc
+        if not image_bytes:
+            raise AIServiceUnavailableError("The uploaded image is empty.")
+        return base64.b64encode(image_bytes).decode("ascii")
 
     def _call_roboflow(self, image_b64: str) -> dict[str, Any]:
-        if not self._api_key:
-            raise AIServiceUnavailableError("ROBOFLOW_API_KEY is not configured.")
-
-        # Hosted Roboflow detection API accepts the base64 image as the raw
-        # request body and the API key as a query parameter. Never log this URL.
+        # Roboflow's hosted detection API accepts a base64 image in the raw
+        # POST body with application/x-www-form-urlencoded content type.
         url = f"{self._api_url}/{self._model_id}"
-        params = {"api_key": self._api_key}
+        params = {"api_key": self._api_key, "format": "json"}
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
         try:
@@ -88,24 +96,29 @@ class _RoboflowBackend:
                 headers=headers,
                 timeout=_ROBOFLOW_TIMEOUT_S,
             )
-            response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise AIServiceUnavailableError(
                 f"Roboflow request timed out after {_ROBOFLOW_TIMEOUT_S}s."
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            raise AIServiceUnavailableError(
-                f"Roboflow returned HTTP {exc.response.status_code}."
             ) from exc
         except httpx.RequestError as exc:
             raise AIServiceUnavailableError(
                 f"Roboflow request failed: {type(exc).__name__}."
             ) from exc
 
+        if response.status_code >= 400:
+            # Never include the API key in the error. The response body is
+            # useful for diagnosing invalid keys/model IDs without exposing secrets.
+            detail = response.text.strip().replace("\n", " ")[:500]
+            raise AIServiceUnavailableError(
+                f"Roboflow returned HTTP {response.status_code}: {detail or 'no response body'}"
+            )
+
         try:
             payload = response.json()
         except ValueError as exc:
-            raise AIServiceUnavailableError("Roboflow returned a non-JSON body.") from exc
+            raise AIServiceUnavailableError(
+                "Roboflow returned a non-JSON response."
+            ) from exc
 
         if not isinstance(payload, dict):
             raise AIServiceUnavailableError("Roboflow returned an invalid response shape.")
@@ -119,19 +132,18 @@ class _RoboflowBackend:
         return "low"
 
     def predict(self, image_path: str) -> AIResult:
-        try:
-            image_b64 = self._read_image_b64(image_path)
-        except OSError as exc:
-            raise AIServiceUnavailableError(
-                f"Could not read image for AI assessment: {exc}"
-            ) from exc
-
+        image_b64 = self._read_image_b64(image_path)
         raw = self._call_roboflow(image_b64)
+
         predictions = raw.get("predictions", [])
         if not isinstance(predictions, list):
-            raise AIServiceUnavailableError("Roboflow response has an invalid predictions field.")
+            raise AIServiceUnavailableError(
+                "Roboflow response has an invalid predictions field."
+            )
 
         if not predictions:
+            # A valid inference with no detected damage is different from an
+            # inference failure. Keep the assessment successful but empty.
             return AIResult(
                 damage_type=None,
                 confidence=None,
@@ -141,14 +153,24 @@ class _RoboflowBackend:
                 processed_at=datetime.now(timezone.utc),
             )
 
-        known = [p for p in predictions if isinstance(p, dict) and p.get("class") in _CLASS_LABEL_MAP]
+        known = [
+            p for p in predictions
+            if isinstance(p, dict) and p.get("class") in _CLASS_LABEL_MAP
+        ]
         working = known if known else [p for p in predictions if isinstance(p, dict)]
         if not working:
             raise AIServiceUnavailableError("Roboflow returned no usable predictions.")
 
-        primary = max(working, key=lambda p: float(p.get("confidence", 0.0)))
-        primary_class = primary.get("class", "")
-        primary_confidence = float(primary.get("confidence", 0.0))
+        def confidence_of(prediction: dict[str, Any]) -> float:
+            try:
+                value = float(prediction.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            return max(0.0, min(1.0, value))
+
+        primary = max(working, key=confidence_of)
+        primary_class = str(primary.get("class") or "")
+        primary_confidence = confidence_of(primary)
         damage_type = _CLASS_LABEL_MAP.get(primary_class, primary_class) or None
         severity = self._severity_from_confidence(primary_confidence)
 
@@ -156,7 +178,7 @@ class _RoboflowBackend:
             "predictions": [
                 {
                     "class": p.get("class"),
-                    "confidence": round(float(p.get("confidence", 0.0)), 4),
+                    "confidence": round(confidence_of(p), 4),
                     "x": p.get("x"),
                     "y": p.get("y"),
                     "width": p.get("width"),
@@ -177,22 +199,6 @@ class _RoboflowBackend:
         )
 
 
-class _StubBackend:
-    def predict(self, image_path: str) -> AIResult:
-        logger.debug("AI stub active; returning null assessment for %s.", image_path)
-        return AIResult(
-            damage_type=None,
-            confidence=None,
-            bounding_boxes=None,
-            estimated_severity=None,
-            model_version=MODEL_VERSION_STUB,
-            processed_at=datetime.now(timezone.utc),
-        )
-
-
-def _get_backend() -> _RoboflowBackend | _StubBackend:
-    return _RoboflowBackend() if settings.ROBOFLOW_API_KEY.strip() else _StubBackend()
-
-
 def assess_image(image_path: str) -> AIResult:
-    return _get_backend().predict(image_path)
+    """Run a real Roboflow assessment. AI failures are never silently stubbed."""
+    return _RoboflowBackend().predict(image_path)
